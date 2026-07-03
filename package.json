@@ -1,0 +1,168 @@
+{
+  "name": "azure-vm-ssh",
+  "displayName": "Azure VM SSH (az ssh)",
+  "description": "Connect to Azure VMs over SSH using `az ssh` (Microsoft Entra certificates) and open them with Remote-SSH.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "azure",
+    "ssh",
+    "remote",
+    "vm",
+    "az ssh"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://example.com/azure-vm-ssh.git"
+  },
+  "icon": "media/icon.png",
+  "extensionDependencies": [
+    "ms-vscode-remote.remote-ssh"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "azureVmSsh.connect",
+        "title": "Connect to VM (new window)",
+        "category": "Azure VM SSH"
+      },
+      {
+        "command": "azureVmSsh.connectCurrentWindow",
+        "title": "Connect to VM (current window)",
+        "category": "Azure VM SSH"
+      },
+      {
+        "command": "azureVmSsh.login",
+        "title": "Sign in to Azure (az login)",
+        "category": "Azure VM SSH"
+      },
+      {
+        "command": "azureVmSsh.selectSubscription",
+        "title": "Select Azure Subscription",
+        "category": "Azure VM SSH"
+      },
+      {
+        "command": "azureVmSsh.refreshTree",
+        "title": "Refresh",
+        "category": "Azure VM SSH",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "azureVmSsh.connectVm",
+        "title": "Connect (new window)",
+        "category": "Azure VM SSH",
+        "icon": "$(remote)"
+      },
+      {
+        "command": "azureVmSsh.connectVmCurrentWindow",
+        "title": "Connect (current window)",
+        "category": "Azure VM SSH"
+      },
+      {
+        "command": "azureVmSsh.startVm",
+        "title": "Start VM",
+        "category": "Azure VM SSH",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "azureVmSsh.stopVm",
+        "title": "Stop VM",
+        "category": "Azure VM SSH",
+        "icon": "$(debug-stop)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "azureVmSsh",
+          "title": "Azure VM SSH",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "azureVmSsh": [
+        {
+          "id": "azureVmSshVms",
+          "name": "Virtual Machines"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "azureVmSsh.refreshTree",
+          "when": "view == azureVmSshVms",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "azureVmSsh.connectVm",
+          "when": "view == azureVmSshVms && viewItem =~ /^vm-/",
+          "group": "inline"
+        },
+        {
+          "command": "azureVmSsh.connectVm",
+          "when": "view == azureVmSshVms && viewItem =~ /^vm-/",
+          "group": "1_connect@1"
+        },
+        {
+          "command": "azureVmSsh.connectVmCurrentWindow",
+          "when": "view == azureVmSshVms && viewItem =~ /^vm-/",
+          "group": "1_connect@2"
+        },
+        {
+          "command": "azureVmSsh.startVm",
+          "when": "view == azureVmSshVms && viewItem == vm-stopped",
+          "group": "2_power@1"
+        },
+        {
+          "command": "azureVmSsh.stopVm",
+          "when": "view == azureVmSshVms && viewItem == vm-running",
+          "group": "2_power@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Azure VM SSH",
+      "properties": {
+        "azureVmSsh.sshConfigDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Directory where per-VM SSH config files and short-lived certificates are written. Leave empty to use `~/.ssh/az-ssh`."
+        },
+        "azureVmSsh.privateKeyFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional path to a private key file for VMs that use a **local user** (not Microsoft Entra). When set, `--local-user` mode is used with this key. Leave empty to use Microsoft Entra certificate login."
+        },
+        "azureVmSsh.localUser": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional local user name to log in as (used together with `azureVmSsh.privateKeyFile`)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
