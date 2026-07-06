@@ -78,6 +78,12 @@
         "title": "Stop VM",
         "category": "Azure VM SSH",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "azureVmSsh.addMyIp",
+        "title": "Allow SSH from My IP",
+        "category": "Azure VM SSH",
+        "icon": "$(shield)"
       }
     ],
     "viewsContainers": {
@@ -130,6 +136,11 @@
           "command": "azureVmSsh.stopVm",
           "when": "view == azureVmSshVms && viewItem == vm-running",
           "group": "2_power@2"
+        },
+        {
+          "command": "azureVmSsh.addMyIp",
+          "when": "view == azureVmSshVms && viewItem =~ /^vm-/",
+          "group": "3_network@1"
         }
       ]
     },
@@ -150,6 +161,16 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Optional local user name to log in as (used together with `azureVmSsh.privateKeyFile`)."
+        },
+        "azureVmSsh.autoAddLocalIp": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Before connecting, automatically add (or move) an inbound rule in the VM's network security group that allows SSH (TCP/22) from your current public IP. Requires network write permission on the NSG. Failures are non-fatal and only warn."
+        },
+        "azureVmSsh.reuseSshConfigMinutes": {
+          "type": "number",
+          "default": 50,
+          "markdownDescription": "Reuse a recently generated SSH config/certificate for this many minutes instead of regenerating it on every connect (speeds up reconnects). Set to `0` to always regenerate. Kept below the ~60-minute Microsoft Entra certificate lifetime."
         }
       }
     }

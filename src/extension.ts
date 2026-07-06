@@ -7,6 +7,7 @@ import {
   currentAccount,
   deallocateVm,
   getPowerState,
+  getVmNsg,
   isAzInstalled,
   isRunning,
   listSubscriptions,
@@ -15,13 +16,17 @@ import {
   runAz,
   setSubscription,
   startVm,
+  upsertSshRule,
 } from './azcli';
-import { ensureInclude, firstHostAlias } from './sshConfig';
+import { getLocalPublicIp } from './network';
+import { ensureInclude, firstHostAlias, firstHostName } from './sshConfig';
 import { VmTreeItem, VmTreeProvider } from './tree';
 
 let tree: VmTreeProvider;
+let extContext: vscode.ExtensionContext;
 
 export function activate(context: vscode.ExtensionContext): void {
+  extContext = context;
   tree = new VmTreeProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('azureVmSshVms', tree)
@@ -51,6 +56,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('azureVmSsh.stopVm', (item?: VmTreeItem) =>
       powerCommand(item, 'stop')
+    ),
+    vscode.commands.registerCommand('azureVmSsh.addMyIp', (item?: VmTreeItem) =>
+      addMyIpCommand(item)
     )
   );
 }
@@ -163,6 +171,19 @@ async function connectToVm(vm: AzVm, currentWindow: boolean): Promise<void> {
     return;
   }
 
+  const cfg = vscode.workspace.getConfiguration('azureVmSsh');
+  if (cfg.get<boolean>('autoAddLocalIp')) {
+    // Best-effort: opening SSH from the current IP shouldn't block a connect
+    // attempt (the rule may already exist, or the user may lack permission).
+    try {
+      await withProgress('Allowing SSH from your IP…', () => ensureLocalIpAllowed(vm));
+    } catch (err) {
+      vscode.window.showWarningMessage(
+        `Could not add your IP to ${vm.name}'s network security group: ${errMessage(err)}`
+      );
+    }
+  }
+
   let alias: string;
   try {
     alias = await withProgress(
@@ -184,7 +205,12 @@ async function connectToVm(vm: AzVm, currentWindow: boolean): Promise<void> {
  * offer to start it (and wait for the start to complete).
  */
 async function ensureVmRunning(vm: AzVm): Promise<boolean> {
-  // The list view's power state can be stale; confirm the live state first.
+  // Fast path: if the tree's cached state already says running, trust it and
+  // skip the extra `vm get-instance-view` round trip (the user just saw it as
+  // running). Only pay for a live check when the cached state looks stopped.
+  if (isRunning(vm.powerState)) {
+    return true;
+  }
   let state = vm.powerState;
   try {
     state = (await getPowerState(vm.resourceGroup, vm.name)) ?? state;
@@ -225,6 +251,21 @@ async function prepareVm(vm: AzVm): Promise<string> {
   fs.mkdirSync(dir, { recursive: true });
   const configFile = path.join(dir, 'config');
 
+  const cfg = vscode.workspace.getConfiguration('azureVmSsh');
+  const privateKey = (cfg.get<string>('privateKeyFile') || '').trim();
+  const localUser = (cfg.get<string>('localUser') || '').trim();
+
+  // Reuse a recently generated config/certificate to avoid the slow
+  // `az ssh config` round trip (and Entra token exchange) on quick reconnects.
+  const reuseMinutes = cfg.get<number>('reuseSshConfigMinutes') ?? 50;
+  if (reuseMinutes > 0 && canReuseConfig(dir, configFile, vm, !privateKey, reuseMinutes)) {
+    ensureInclude(configFile);
+    const cached = firstHostAlias(configFile);
+    if (cached) {
+      return cached;
+    }
+  }
+
   // az prompts before overwriting an existing key pair. These files are
   // ephemeral (regenerated every connect), so remove any leftovers first to
   // keep `az ssh config` fully non-interactive.
@@ -235,10 +276,6 @@ async function prepareVm(vm: AzVm): Promise<string> {
       /* ignore */
     }
   }
-
-  const cfg = vscode.workspace.getConfiguration('azureVmSsh');
-  const privateKey = (cfg.get<string>('privateKeyFile') || '').trim();
-  const localUser = (cfg.get<string>('localUser') || '').trim();
 
   const args = [
     'ssh',
@@ -270,6 +307,97 @@ async function prepareVm(vm: AzVm): Promise<string> {
     throw new Error('Could not determine the SSH host alias from the generated config.');
   }
   return alias;
+}
+
+/**
+ * Whether the previously generated SSH config in `dir` is still safe to reuse:
+ * it must be recent enough, its Entra certificate (when applicable) must still
+ * be present, and its target address must still match the VM's current public
+ * IP (guards against a dynamic IP changing after a stop/start).
+ */
+function canReuseConfig(
+  dir: string,
+  configFile: string,
+  vm: AzVm,
+  needsCert: boolean,
+  reuseMinutes: number
+): boolean {
+  try {
+    if (!fs.existsSync(configFile)) {
+      return false;
+    }
+    const ageMs = Date.now() - fs.statSync(configFile).mtimeMs;
+    if (ageMs >= reuseMinutes * 60_000) {
+      return false;
+    }
+    if (needsCert && !fs.existsSync(path.join(dir, 'id_rsa.pub-aadcert.pub'))) {
+      return false;
+    }
+    // If we know the VM's public IPs, make sure the cached config still points
+    // at one of them. Skip the check when no public IP is reported.
+    if (vm.publicIps) {
+      const host = firstHostName(configFile);
+      const ips = vm.publicIps.split(/[,\s]+/).filter(Boolean);
+      if (host && ips.length > 0 && !ips.includes(host)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Add (or move) an inbound NSG rule that allows SSH from the caller's current
+ * public IP. No-op when the IP hasn't changed since the last successful add
+ * for this VM, keeping repeat connects fast.
+ */
+async function ensureLocalIpAllowed(vm: AzVm): Promise<void> {
+  const ip = await getLocalPublicIp();
+  const stateKey = `allowedIp:${vm.resourceGroup}/${vm.name}`;
+  if (extContext.globalState.get<string>(stateKey) === ip) {
+    return;
+  }
+  const nsg = await getVmNsg(vm.resourceGroup, vm.name);
+  if (!nsg) {
+    throw new Error('no network security group is attached to this VM or its subnet');
+  }
+  await upsertSshRule(nsg, ip);
+  await extContext.globalState.update(stateKey, ip);
+}
+
+/** Palette/tree command: allow SSH from the current public IP for a VM. */
+async function addMyIpCommand(item: VmTreeItem | undefined): Promise<void> {
+  if (!(await ensureLoggedIn())) {
+    return;
+  }
+  const vm = item?.vm ?? (await pickVm());
+  if (!vm) {
+    return;
+  }
+  try {
+    const ip = await withProgress('Detecting your public IP…', getLocalPublicIp);
+    const nsg = await withProgress(`Finding ${vm.name}'s security group…`, () =>
+      getVmNsg(vm.resourceGroup, vm.name)
+    );
+    if (!nsg) {
+      vscode.window.showWarningMessage(
+        `No network security group is attached to ${vm.name} or its subnet; nothing to update.`
+      );
+      return;
+    }
+    const result = await withProgress(`Allowing SSH from ${ip}…`, () =>
+      upsertSshRule(nsg, ip)
+    );
+    await extContext.globalState.update(`allowedIp:${vm.resourceGroup}/${vm.name}`, ip);
+    vscode.window.showInformationMessage(
+      `${result.created ? 'Added' : 'Updated'} SSH allow rule on "${result.nsg}" for ${ip} ` +
+        `(priority ${result.priority}).`
+    );
+  } catch (err) {
+    vscode.window.showErrorMessage(`Failed to allow your IP for ${vm.name}: ${errMessage(err)}`);
+  }
 }
 
 /** Open a Remote-SSH window for the given host alias. */

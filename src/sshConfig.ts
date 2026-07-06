@@ -57,3 +57,15 @@ export function firstHostAlias(configFile: string): string | undefined {
   }
   return undefined;
 }
+
+/** Extract the first `HostName` (target address) from an SSH config file. */
+export function firstHostName(configFile: string): string | undefined {
+  const text = fs.readFileSync(configFile, 'utf8');
+  for (const raw of text.split(/\r?\n/)) {
+    const m = /^\s*HostName\s+(\S+)/i.exec(raw);
+    if (m) {
+      return m[1];
+    }
+  }
+  return undefined;
+}

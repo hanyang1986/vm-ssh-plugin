@@ -161,3 +161,132 @@ export function startVm(resourceGroup: string, name: string): Promise<AzResult> 
 export function deallocateVm(resourceGroup: string, name: string): Promise<AzResult> {
   return runAz(['vm', 'deallocate', '--resource-group', resourceGroup, '--name', name]);
 }
+
+// ---------------------------------------------------------------------------
+// Network security group (NSG) helpers — used to allow SSH from the caller's
+// public IP without touching the Azure portal.
+// ---------------------------------------------------------------------------
+
+export interface NsgRef {
+  /** Resource group that contains the NSG (may differ from the VM's). */
+  resourceGroup: string;
+  name: string;
+}
+
+export interface UpsertRuleResult {
+  created: boolean;
+  ip: string;
+  priority: number;
+  nsg: string;
+}
+
+/** Fixed name of the inbound rule this extension manages. */
+const SSH_RULE_NAME = 'AzureVmSsh-AllowMyIP';
+
+/** Split an ARM resource id into its resource group and (last-segment) name. */
+function parseResourceId(id: string): NsgRef {
+  const parts = id.split('/');
+  const idx = parts.findIndex((p) => p.toLowerCase() === 'resourcegroups');
+  return {
+    resourceGroup: idx >= 0 ? parts[idx + 1] : '',
+    name: parts[parts.length - 1],
+  };
+}
+
+/**
+ * Resolve the NSG that governs inbound traffic to a VM: first the NSG on the
+ * VM's primary NIC, falling back to the NSG on the NIC's subnet. Returns
+ * undefined when neither the NIC nor its subnet has an NSG attached.
+ */
+export async function getVmNsg(
+  resourceGroup: string,
+  name: string
+): Promise<NsgRef | undefined> {
+  const vm = await runAzJson<{
+    networkProfile?: { networkInterfaces?: { id: string }[] };
+  }>(['vm', 'show', '--resource-group', resourceGroup, '--name', name]);
+
+  const nicId = vm.networkProfile?.networkInterfaces?.[0]?.id;
+  if (!nicId) {
+    return undefined;
+  }
+
+  const nic = await runAzJson<{
+    networkSecurityGroup?: { id?: string };
+    ipConfigurations?: { subnet?: { id?: string } }[];
+  }>(['network', 'nic', 'show', '--ids', nicId]);
+
+  if (nic.networkSecurityGroup?.id) {
+    return parseResourceId(nic.networkSecurityGroup.id);
+  }
+
+  const subnetId = nic.ipConfigurations?.[0]?.subnet?.id;
+  if (!subnetId) {
+    return undefined;
+  }
+  const subnet = await runAzJson<{ networkSecurityGroup?: { id?: string } }>([
+    'network',
+    'vnet',
+    'subnet',
+    'show',
+    '--ids',
+    subnetId,
+  ]);
+  return subnet.networkSecurityGroup?.id
+    ? parseResourceId(subnet.networkSecurityGroup.id)
+    : undefined;
+}
+
+/**
+ * Create or update the managed inbound rule so that TCP/22 is allowed from
+ * `ip` (a single address). Reuses a stable rule name so repeated calls just
+ * move the allowed IP rather than piling up rules.
+ */
+export async function upsertSshRule(
+  nsg: NsgRef,
+  ip: string
+): Promise<UpsertRuleResult> {
+  const cidr = `${ip}/32`;
+  const details = await runAzJson<{
+    securityRules?: { name: string; priority: number }[];
+  }>(['network', 'nsg', 'show', '--resource-group', nsg.resourceGroup, '--name', nsg.name]);
+
+  const rules = details.securityRules || [];
+  const existing = rules.find((r) => r.name === SSH_RULE_NAME);
+
+  if (existing) {
+    await runAz([
+      'network', 'nsg', 'rule', 'update',
+      '--resource-group', nsg.resourceGroup,
+      '--nsg-name', nsg.name,
+      '--name', SSH_RULE_NAME,
+      '--source-address-prefixes', cidr,
+      '--destination-port-ranges', '22',
+      '--protocol', 'Tcp',
+      '--access', 'Allow',
+      '--direction', 'Inbound',
+    ]);
+    return { created: false, ip, priority: existing.priority, nsg: nsg.name };
+  }
+
+  // Pick the lowest unused priority in a low band so the allow rule wins.
+  const used = new Set(rules.map((r) => r.priority));
+  let priority = 300;
+  while (used.has(priority)) {
+    priority += 10;
+  }
+  await runAz([
+    'network', 'nsg', 'rule', 'create',
+    '--resource-group', nsg.resourceGroup,
+    '--nsg-name', nsg.name,
+    '--name', SSH_RULE_NAME,
+    '--priority', String(priority),
+    '--source-address-prefixes', cidr,
+    '--destination-port-ranges', '22',
+    '--protocol', 'Tcp',
+    '--access', 'Allow',
+    '--direction', 'Inbound',
+    '--description', 'Added by the Azure VM SSH extension',
+  ]);
+  return { created: true, ip, priority, nsg: nsg.name };
+}
