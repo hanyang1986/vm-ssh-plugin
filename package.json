@@ -48,7 +48,8 @@
       {
         "command": "azureVmSsh.selectSubscription",
         "title": "Select Azure Subscription",
-        "category": "Azure VM SSH"
+        "category": "Azure VM SSH",
+        "icon": "$(account)"
       },
       {
         "command": "azureVmSsh.refreshTree",
@@ -106,9 +107,14 @@
     "menus": {
       "view/title": [
         {
+          "command": "azureVmSsh.selectSubscription",
+          "when": "view == azureVmSshVms",
+          "group": "navigation@1"
+        },
+        {
           "command": "azureVmSsh.refreshTree",
           "when": "view == azureVmSshVms",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [

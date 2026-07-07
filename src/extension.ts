@@ -23,14 +23,20 @@ import { ensureInclude, firstHostAlias, firstHostName } from './sshConfig';
 import { VmTreeItem, VmTreeProvider } from './tree';
 
 let tree: VmTreeProvider;
+let treeView: vscode.TreeView<VmTreeItem>;
 let extContext: vscode.ExtensionContext;
 
 export function activate(context: vscode.ExtensionContext): void {
   extContext = context;
   tree = new VmTreeProvider();
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('azureVmSshVms', tree)
-  );
+  treeView = vscode.window.createTreeView('azureVmSshVms', {
+    treeDataProvider: tree,
+  });
+  context.subscriptions.push(treeView);
+  // Keep the view's subtitle in sync with the active subscription whenever the
+  // tree is (re)loaded.
+  context.subscriptions.push(tree.onDidChangeTreeData(() => updateSubscriptionLabel()));
+  updateSubscriptionLabel();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('azureVmSsh.connect', () =>
@@ -516,6 +522,15 @@ async function ensureLoggedIn(): Promise<boolean> {
     tree.refresh();
   }
   return ok;
+}
+
+/** Show the active subscription name as the VM view's subtitle. */
+async function updateSubscriptionLabel(): Promise<void> {
+  if (!treeView) {
+    return;
+  }
+  const acct = await currentAccount();
+  treeView.description = acct?.name ?? undefined;
 }
 
 function withProgress<T>(title: string, task: () => Promise<T>): Thenable<T> {
