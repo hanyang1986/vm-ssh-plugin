@@ -1,9 +1,9 @@
 {
-  "name": "azure-vm-ssh",
-  "displayName": "Azure VM SSH (az ssh)",
+  "name": "azure-vm-remote-ssh",
+  "displayName": "Azure Entra VM Remote SSH (az ssh)",
   "description": "Connect to Azure VMs over SSH using `az ssh` (Microsoft Entra certificates) and open them with Remote-SSH.",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "Remote-AADSSH",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
@@ -20,7 +20,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://example.com/azure-vm-ssh.git"
+    "url": "https://github.com/hanyang1986/vm-ssh-plugin.git"
   },
   "icon": "media/icon.png",
   "extensionDependencies": [
